@@ -124,6 +124,10 @@ module Sequel
       def validate_constraint(name)
         @operations << {:op => :validate_constraint, :name => name}
       end
+      
+      def attach_partition(name, opts=OPTS)
+        @operations << {:op => :attach_partition, :name => name}.merge!(opts)
+      end
     end
 
     # Error raised when Sequel determines a PostgreSQL exclusion constraint has been violated.
@@ -134,6 +138,8 @@ module Sequel
 
       PREPARED_ARG_PLACEHOLDER = LiteralString.new('$').freeze
       FOREIGN_KEY_LIST_ON_DELETE_MAP = {'a'=>:no_action, 'r'=>:restrict, 'c'=>:cascade, 'n'=>:set_null, 'd'=>:set_default}.freeze
+      PARTITION_BY = {:range => 'RANGE', :list => 'LIST'}
+      PARTITION_BY.each_value(&:freeze)
       ON_COMMIT = {:drop => 'DROP', :delete_rows => 'DELETE ROWS', :preserve_rows => 'PRESERVE ROWS'}.freeze
       ON_COMMIT.each_value(&:freeze)
 
@@ -793,6 +799,19 @@ module Sequel
         "VALIDATE CONSTRAINT #{quote_identifier(op[:name])}"
       end
 
+      def alter_table_attach_partition_sql(table, op)
+        values =
+          if op.key?(:in)
+            raise(Error, "You cannot pass :in when passing :from or :to") if op.key?(:from) || op.key?(:to)
+            "IN #{literal(op[:in])}"
+          elsif op.key?(:from) && op.key?(:to)
+            "FROM #{literal(Array(op[:from]))} TO #{literal(Array(op[:to]))}"
+          else
+            raise(Error, "Unsupported options #{values.inspect}")
+          end
+        "ATTACH PARTITION #{quote_identifier(op[:name])} FOR VALUES #{values}"
+      end
+
       # If the :synchronous option is given and non-nil, set synchronous_commit
       # appropriately.  Valid values for the :synchronous option are true,
       # :on, false, :off, :local, and :remote_write.
@@ -1034,6 +1053,12 @@ module Sequel
 
         if inherits = options[:inherits]
           sql += " INHERITS (#{Array(inherits).map{|t| quote_schema_table(t)}.join(', ')})"
+        end
+
+        if partition_by = options[:partition_by]
+          raise(Error, "unsupported strategy: #{partition_by[0].inspect}") unless PARTITION_BY.has_key?(partition_by[0])
+          sql += " PARTITION BY #{PARTITION_BY[partition_by[0]]} "
+          sql += literal(Array(partition_by[1]))
         end
 
         if on_commit = options[:on_commit]
